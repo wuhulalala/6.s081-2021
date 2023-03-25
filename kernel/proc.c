@@ -304,6 +304,8 @@ fork(void)
   safestrcpy(np->name, p->name, sizeof(p->name));
 
   pid = np->pid;
+  // copy the trace mask from the parent to the child process
+  np -> mask = p -> mask;
 
   release(&np->lock);
 
@@ -315,6 +317,7 @@ fork(void)
   np->state = RUNNABLE;
   release(&np->lock);
 
+  
   return pid;
 }
 
@@ -653,4 +656,16 @@ procdump(void)
     printf("%d %s %s", p->pid, state, p->name);
     printf("\n");
   }
+}
+// number of UNUSED processes
+int
+proc_active(void) 
+{
+  int num = 0;
+  for (int i = 0; i < NPROC; i += 1)
+  {
+    if (proc[i].state != UNUSED)
+      num += 1;
+  }
+  return num;
 }
