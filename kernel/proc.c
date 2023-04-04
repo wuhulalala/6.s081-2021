@@ -20,6 +20,7 @@ static void freeproc(struct proc *p);
 
 extern char trampoline[]; // trampoline.S
 
+extern pte_t * walk(pagetable_t pagetable, uint64 va, int alloc);
 // helps ensure that wakeups of wait()ing
 // parents are not lost. helps obey the
 // memory model when using p->parent.
@@ -127,6 +128,15 @@ found:
     return 0;
   }
 
+  //Allocate a usyscall page.
+  if((p->usyscall = (struct usyscall *)kalloc()) == 0){
+    freeproc(p);
+    release(&p->lock);
+    return 0;
+  } else {
+    p->usyscall->pid = p->pid;
+  }
+
   // An empty user page table.
   p->pagetable = proc_pagetable(p);
   if(p->pagetable == 0){
@@ -156,6 +166,9 @@ freeproc(struct proc *p)
   if(p->pagetable)
     proc_freepagetable(p->pagetable, p->sz);
   p->pagetable = 0;
+  if(p->usyscall) 
+    kfree((void*)p->usyscall);
+  p->usyscall = 0;
   p->sz = 0;
   p->pid = 0;
   p->parent = 0;
@@ -196,6 +209,16 @@ proc_pagetable(struct proc *p)
     return 0;
   }
 
+  // map the usyscall below TRAPFRAME, for ugetpid
+  if (mappages(pagetable, USYSCALL, PGSIZE, 
+              (uint64)(p->usyscall), PTE_R | PTE_U) < 0){
+    uvmunmap(pagetable, TRAMPOLINE, 1, 0);
+    uvmunmap(pagetable, TRAPFRAME, 1, 0);
+    uvmunmap(pagetable, USYSCALL, 1, 0);
+    uvmfree(pagetable, 0);
+    return 0;
+  }
+
   return pagetable;
 }
 
@@ -206,6 +229,7 @@ proc_freepagetable(pagetable_t pagetable, uint64 sz)
 {
   uvmunmap(pagetable, TRAMPOLINE, 1, 0);
   uvmunmap(pagetable, TRAPFRAME, 1, 0);
+  uvmunmap(pagetable, USYSCALL, 1, 0);
   uvmfree(pagetable, sz);
 }
 
@@ -653,4 +677,24 @@ procdump(void)
     printf("%d %s %s", p->pid, state, p->name);
     printf("\n");
   }
+}
+
+// pgaccess
+int 
+pgaccess(void *base, int len, void *mask){
+  uint32 tempmask = 0;
+  struct proc *p = myproc();
+  for (int i = 0; i < len; i += 1){
+    pte_t * pte = walk(p->pagetable, (uint64)(base) + i * (PGSIZE), 0);
+    if (pte != 0 && (*pte & PTE_A)){
+      tempmask |= 1 << i;
+      *pte ^= PTE_A;
+
+    }
+  }
+
+  if (copyout(p->pagetable, (uint64)mask, (char *)&tempmask, 4) < 0){
+    return -1;
+  }
+  return 0;
 }

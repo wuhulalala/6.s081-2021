@@ -7,6 +7,7 @@
 #include "spinlock.h"
 #include "proc.h"
 
+extern int pgaccess(void *base, int len, void *mask);
 uint64
 sys_exit(void)
 {
@@ -75,13 +76,24 @@ sys_sleep(void)
   return 0;
 }
 
-
+// a system call that reports which pages have been accessed
 #ifdef LAB_PGTBL
 int
 sys_pgaccess(void)
 {
   // lab pgtbl: your code here.
-  return 0;
+  uint64 va, bitmask;
+  int len;
+  if (argint(1, &len) < 0){
+    return -1;
+  }
+  if (argaddr(0, &va) < 0 || argaddr(2, &bitmask) < 0){
+    return -1;
+  }
+  if (len > MAXPGNUM){
+    return -1;
+  }
+  return pgaccess((void *)va, len, (void *)bitmask);
 }
 #endif
 
@@ -107,3 +119,4 @@ sys_uptime(void)
   release(&tickslock);
   return xticks;
 }
+
