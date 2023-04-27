@@ -14,6 +14,11 @@ void freerange(void *pa_start, void *pa_end);
 extern char end[]; // first address after kernel.
                    // defined by kernel.ld.
 
+#define MAXPAPG ((PHYSTOP - KERNBASE) / PGSIZE)
+#define PAINDEX(a) (((a) - KERNBASE) / PGSIZE)
+int refer_count[MAXPAPG + 1];
+
+
 struct run {
   struct run *next;
 };
@@ -27,7 +32,11 @@ void
 kinit()
 {
   initlock(&kmem.lock, "kmem");
+  for (uint64 pa = (uint64)end; pa <= PHYSTOP; pa += PGSIZE){
+    refer_count[PAINDEX(pa)] = 0;
+  }
   freerange(end, (void*)PHYSTOP);
+
 }
 
 void
@@ -52,14 +61,21 @@ kfree(void *pa)
     panic("kfree");
 
   // Fill with junk to catch dangling refs.
-  memset(pa, 1, PGSIZE);
+  if (refer_count[PAINDEX((uint64)pa)] != 0)
+    refer_decrease((uint64)pa);
 
-  r = (struct run*)pa;
+  if(refer_count[PAINDEX((uint64)pa)] == 0){
+    memset(pa, 1, PGSIZE);
 
-  acquire(&kmem.lock);
-  r->next = kmem.freelist;
-  kmem.freelist = r;
-  release(&kmem.lock);
+    r = (struct run*)pa;
+
+    acquire(&kmem.lock);
+    r->next = kmem.freelist;
+    kmem.freelist = r;
+    release(&kmem.lock);
+
+  } 
+  
 }
 
 // Allocate one 4096-byte page of physical memory.
@@ -78,5 +94,19 @@ kalloc(void)
 
   if(r)
     memset((char*)r, 5, PGSIZE); // fill with junk
+  if(r)
+    refer_count[PAINDEX((uint64)r)] = 1;
   return (void*)r;
+}
+
+void 
+refer_increase(uint64 pa)
+{ 
+  refer_count[PAINDEX((uint64)pa)] += 1;
+}
+
+void 
+refer_decrease(uint64 pa)
+{ 
+  refer_count[PAINDEX((uint64)pa)] -= 1;
 }

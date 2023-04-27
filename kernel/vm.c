@@ -5,7 +5,8 @@
 #include "riscv.h"
 #include "defs.h"
 #include "fs.h"
-
+#include "proc.h"
+#include "spinlock.h"
 /*
  * the kernel's page table.
  */
@@ -116,6 +117,8 @@ walkaddr(pagetable_t pagetable, uint64 va)
     return 0;
   if((*pte & PTE_U) == 0)
     return 0;
+  if((*pte & PTE_W) == 0)
+    return -1;
   pa = PTE2PA(*pte);
   return pa;
 }
@@ -303,28 +306,71 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
   pte_t *pte;
   uint64 pa, i;
   uint flags;
-  char *mem;
 
   for(i = 0; i < sz; i += PGSIZE){
     if((pte = walk(old, i, 0)) == 0)
       panic("uvmcopy: pte should exist");
     if((*pte & PTE_V) == 0)
       panic("uvmcopy: page not present");
+    
+    *pte = (*pte & ~PTE_W) | PTE_COW;
     pa = PTE2PA(*pte);
     flags = PTE_FLAGS(*pte);
-    if((mem = kalloc()) == 0)
-      goto err;
-    memmove(mem, (char*)pa, PGSIZE);
-    if(mappages(new, i, PGSIZE, (uint64)mem, flags) != 0){
-      kfree(mem);
+    //if((mem = kalloc()) == 0)
+      //goto err;
+    //memmove(mem, (char*)pa, PGSIZE);
+    if(mappages(new, i, PGSIZE, (uint64)pa, flags) != 0){
+      //kfree(mem);
       goto err;
     }
+    refer_increase(pa);
   }
   return 0;
 
  err:
   uvmunmap(new, 0, i / PGSIZE, 1);
   return -1;
+}
+// check out whether the page is cow page
+int 
+uvmcheckcowpage(uint64 va)
+{
+  struct proc *p = myproc();
+  
+  uint64 * pte = walk(p->pagetable, va, 0);
+  return va < p->sz
+    && (pte != 0)
+    && (*pte & PTE_V)
+    && (*pte & PTE_COW);
+}
+
+
+int 
+uvmcowcopy(uint64 va)
+{
+  struct proc *p = myproc();
+  char *mem;
+  uint64 pa;
+  uint flags;
+  uint64 *pte_another;
+  uint64 *pte;
+  pte = walk(p->pagetable, va, 0);
+  *pte = (*pte ^ PTE_W) | (~ PTE_COW);
+  pte_another = walk(p->another_pagetable, va, 0);
+  *pte_another = (*pte_another ^ PTE_W) | (~ PTE_COW);
+  if((mem = kalloc()) == 0){
+    return -1;
+  }
+  flags = PTE_FLAGS(*pte);
+  pa = PTE2PA(*pte); 
+  memmove(mem, (char*)PGROUNDDOWN(pa), PGSIZE);
+  uvmunmap(p->pagetable, va, 1, 0);
+  if(mappages(p->pagetable, PGROUNDDOWN(va), PGSIZE, (uint64)pa, flags) != 0){
+    kfree(mem);
+    return -1;
+  }
+  return 0; 
+      
 }
 
 // mark a PTE invalid for user access.
@@ -347,8 +393,10 @@ int
 copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
 {
   uint64 n, va0, pa0;
-
   while(len > 0){
+    if(uvmcheckcowpage(dstva)) {
+      uvmcowcopy(dstva);
+    }
     va0 = PGROUNDDOWN(dstva);
     pa0 = walkaddr(pagetable, va0);
     if(pa0 == 0)

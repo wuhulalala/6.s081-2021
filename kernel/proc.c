@@ -288,7 +288,8 @@ fork(void)
     return -1;
   }
   np->sz = p->sz;
-
+  np->another_pagetable = p->pagetable;
+  p->another_pagetable = np->another_pagetable;
   // copy saved user registers.
   *(np->trapframe) = *(p->trapframe);
 
